@@ -2,8 +2,9 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Diagnostics;
 using System.IO;
-using Microsoft.Extensions.Primitives;
+using System.Threading;
 
 namespace Microsoft.Extensions.FileProviders.Physical
 {
@@ -20,7 +21,7 @@ namespace Microsoft.Extensions.FileProviders.Physical
     /// <remarks>
     /// Polling occurs every 4 seconds.
     /// </remarks>
-    public class PollingFileChangeToken : IChangeToken
+    public class PollingFileChangeToken : IPollingChangeToken
     {
         private readonly FileInfo _fileInfo;
         private DateTime _previousWriteTimeUtc;
@@ -39,7 +40,7 @@ namespace Microsoft.Extensions.FileProviders.Physical
         }
 
         // Internal for unit testing
-        internal static TimeSpan PollingInterval { get; set; } = TimeSpan.FromSeconds(4);
+        internal static TimeSpan PollingInterval { get; set; } = PhysicalFilesWatcher.DefaultPollingInterval;
 
         private DateTime GetLastWriteTimeUtc()
         {
@@ -50,7 +51,11 @@ namespace Microsoft.Extensions.FileProviders.Physical
         /// <summary>
         /// Always false.
         /// </summary>
-        public bool ActiveChangeCallbacks => false;
+        public bool ActiveChangeCallbacks { get; internal set; }
+
+        internal CancellationTokenSource CancellationTokenSource { get; set; }
+
+        CancellationTokenSource IPollingChangeToken.CancellationTokenSource => CancellationTokenSource;
 
         /// <summary>
         /// True when the file has changed since the change token was created. Once the file changes, this value is always true
@@ -92,6 +97,25 @@ namespace Microsoft.Extensions.FileProviders.Physical
         /// <param name="callback">This parameter is ignored</param>
         /// <param name="state">This parameter is ignored</param>
         /// <returns>A disposable object that noops when disposed</returns>
-        public IDisposable RegisterChangeCallback(Action<object> callback, object state) => EmptyDisposable.Instance;
+        public IDisposable RegisterChangeCallback(Action<object> callback, object state)
+        {
+            if (!ActiveChangeCallbacks)
+            {
+                return EmptyDisposable.Instance;
+            }
+
+            Debug.Assert(CancellationTokenSource != null);
+            try
+            {
+                return CancellationTokenSource.Token.Register(callback, state);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Reset the flag so that we can indicate to future callers that this wouldn't work.
+                ActiveChangeCallbacks = false;
+            }
+
+            return EmptyDisposable.Instance;
+        }
     }
 }
